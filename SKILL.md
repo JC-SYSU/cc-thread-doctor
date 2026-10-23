@@ -35,7 +35,7 @@ Repairs files, not Claude Code itself. A session is a plaintext JSONL file under
    python3 scripts/doctor_verify.py --session <id> --shadow-resume --allow-cost
    ```
 
-## Treatments in v0.1
+## Treatments in v0.2
 
 ```bash
 # Remove a tool definition recorded in prompt snapshots
@@ -43,6 +43,9 @@ python3 scripts/doctor_fix.py tools --session <id> --drop Artifact --apply
 
 # Drop truncated trailing lines
 python3 scripts/doctor_fix.py repair-tail --session <id> --apply
+
+# Fill an interrupted tool call with a synthetic error result
+python3 scripts/doctor_fix.py unanswered-calls --session <id> --apply
 
 # Restore a backup
 python3 scripts/doctor_fix.py restore --backup <dir>
@@ -67,6 +70,8 @@ python3 scripts/doctor_fix.py restore --backup <dir>
 - `re2-incompatible-schema`: any tool whose `pattern` uses lookaround,
   backreferences, atomic groups, conditionals, `\G` or `\Z`. See mode 2.
 - `truncated-tail`: the last write was cut off. See mode 3.
-- `dangling-tool-use`: a call lost its result mid-transcript. Detected only.
+- `dangling-tool-use`: a call lost its result mid-transcript. Treat with
+  `unanswered-calls`.
 - `unanswered-final-turn`: normal while a turn runs; a defect if interrupted.
+  The same treatment appends a user record carrying the synthetic result.
 - `oversized-session`: check the byte attribution before proposing a slim.

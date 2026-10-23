@@ -10,7 +10,7 @@ Every repair is explicit, backed up, written atomically, and re-read from disk
 to prove the promised invariant still holds. A repair can then be proven
 end-to-end by resuming a shadow copy with the real `claude` CLI.
 
-Status: v0.1.0, early. The audit and the two included treatments are covered
+Status: v0.2.0, early. The audit and the three included treatments are covered
 by tests. The remaining failure modes are documented with their evidence and
 planned commands, and are marked as such.
 
@@ -60,12 +60,12 @@ Verified by tests and by the case above:
 | Tool definitions recorded in a snapshot that must not be sent (Artifact while artifacts are disabled) | `doctor_fix.py tools --drop Artifact --apply` |
 | RE2-incompatible `pattern` in any recorded tool schema | `doctor_fix.py tools --drop <tool> --apply` |
 | Trailing lines cut off by a crash (invalid JSON at the end) | `doctor_fix.py repair-tail --apply` |
+| `tool_use` without a matching `tool_result` (interrupted turn) | `doctor_fix.py unanswered-calls --apply` |
 
-Detected and reported in v0.1; treatments planned:
+Detected and reported; treatments planned:
 
 | Failure | Status |
 | --- | --- |
-| `tool_use` without a matching `tool_result` (interrupted turn) | audit reports `dangling-tool-use` / `unanswered-final-turn` |
 | Oversized sessions (inline images, giant tool results, request blobs) | audit reports `oversized-session` with byte attribution |
 | Orphan `tool_result`, unknown record types | audit reports them |
 
@@ -81,6 +81,9 @@ python3 scripts/doctor_audit.py --session abc12345 --json
 # Treat: dry run first, then apply
 python3 scripts/doctor_fix.py tools --session abc12345 --drop Artifact
 python3 scripts/doctor_fix.py tools --session abc12345 --drop Artifact --apply
+
+# Give an interrupted tool call a synthetic error result
+python3 scripts/doctor_fix.py unanswered-calls --session abc12345 --apply
 
 # Verify statically, or with a real shadow resume (spends tokens)
 python3 scripts/doctor_verify.py --session abc12345
@@ -106,7 +109,7 @@ tool itself failed. `doctor_audit.py --strict` also fails on warnings.
 
 - Shadow resume proves the file is resumable on this machine with the current
   provider. It cannot promise a remote service accepts the transcript forever.
-- The JSONL format is internal and changes between releases. v0.1 was developed
+- The JSONL format is internal and changes between releases. v0.2 was developed
   against Claude Code 2.1.304; unknown record types are preserved and reported,
   but a future format change may need a new reader.
 - `dangling-tool-use` in the final assistant message is reported as a warning:

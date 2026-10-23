@@ -9,10 +9,17 @@ from conftest import (
     dump,
     snapshot_line,
     title_line,
+    tool_use_line,
     user_line,
 )
 from doctor_fix import main as fix_main
-from doctor_lib import iter_tool_lists, read_session, sha256_file, tool_name
+from doctor_lib import (
+    iter_tool_lists,
+    read_session,
+    sha256_file,
+    split_unanswered_calls,
+    tool_name,
+)
 
 
 def _backup_dirs(home):
@@ -168,3 +175,150 @@ def test_restore_puts_the_backup_back(make_session):
     code = fix_main(["restore", "--backup", str(backup_dir), "--target", str(target)])
     assert code == 0
     assert target.read_bytes() == original
+
+
+def test_unanswered_calls_fills_the_next_user_message(make_session):
+    home, session_id, path = make_session(
+        [
+            user_line("go", "sid", uuid="u1"),
+            tool_use_line("toolu_1", "Bash", "sid", uuid="a1"),
+            user_line("next prompt", "sid", uuid="u2"),
+        ]
+    )
+    before = path.read_bytes().split(b"\n")
+    code = fix_main(
+        [
+            "unanswered-calls",
+            "--session",
+            session_id,
+            "--apply",
+            "--claude-home",
+            str(home),
+        ]
+    )
+    assert code == 0
+
+    after = read_session(path)
+    assert len(after.lines) == 3
+    content = after.lines[2].obj["message"]["content"]
+    assert content[0]["type"] == "tool_result"
+    assert content[0]["tool_use_id"] == "toolu_1"
+    assert content[0]["is_error"] is True
+    assert content[1] == {"type": "text", "text": "next prompt"}
+    assert after.lines[0].raw == before[0]
+    assert after.lines[1].raw == before[1]
+    lost, tail = split_unanswered_calls(after.lines)
+    assert [item for item in lost + tail if not item[3]] == []
+    assert len(_backup_dirs(home)) == 1
+
+
+def test_unanswered_calls_appends_a_result_for_the_final_turn(make_session):
+    home, session_id, path = make_session(
+        [
+            user_line("go", "sid", uuid="u1"),
+            tool_use_line("toolu_1", "Bash", "sid", uuid="a1"),
+        ]
+    )
+    before = path.read_bytes().split(b"\n")
+    code = fix_main(
+        [
+            "unanswered-calls",
+            "--session",
+            session_id,
+            "--apply",
+            "--claude-home",
+            str(home),
+        ]
+    )
+    assert code == 0
+
+    after = read_session(path)
+    assert len(after.lines) == 3
+    record = after.lines[2].obj
+    assert record["type"] == "user"
+    assert record["parentUuid"] == "a1"
+    block = record["message"]["content"][0]
+    assert block["tool_use_id"] == "toolu_1"
+    assert block["is_error"] is True
+    assert after.lines[0].raw == before[0]
+    assert after.lines[1].raw == before[1]
+    lost, tail = split_unanswered_calls(after.lines)
+    assert [item for item in lost + tail if not item[3]] == []
+
+
+def test_unanswered_calls_expect_count_guard(make_session):
+    home, session_id, path = make_session(
+        [
+            user_line("go", "sid", uuid="u1"),
+            tool_use_line("toolu_1", "Bash", "sid", uuid="a1"),
+            user_line("next", "sid", uuid="u2"),
+        ]
+    )
+    before = path.read_bytes()
+    code = fix_main(
+        [
+            "unanswered-calls",
+            "--session",
+            session_id,
+            "--expect-count",
+            "5",
+            "--apply",
+            "--claude-home",
+            str(home),
+        ]
+    )
+    assert code == 1
+    assert path.read_bytes() == before
+    assert _backup_dirs(home) == []
+
+
+def test_unanswered_calls_ignores_server_tools(make_session):
+    server_tool = {
+        "type": "assistant",
+        "uuid": "a1",
+        "timestamp": "2026-10-23T00:00:00.000Z",
+        "sessionId": "sid",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {"type": "server_tool_use", "id": "call_1", "name": "web_search"}
+            ],
+        },
+    }
+    home, session_id, path = make_session(
+        [user_line("go", "sid", uuid="u1"), server_tool]
+    )
+    before = path.read_bytes()
+    code = fix_main(
+        [
+            "unanswered-calls",
+            "--session",
+            session_id,
+            "--apply",
+            "--claude-home",
+            str(home),
+        ]
+    )
+    assert code == 0
+    assert path.read_bytes() == before
+
+
+def test_unanswered_calls_is_idempotent(make_session, capsys):
+    home, session_id, path = make_session(
+        [
+            user_line("go", "sid", uuid="u1"),
+            tool_use_line("toolu_1", "Bash", "sid", uuid="a1"),
+            user_line("next", "sid", uuid="u2"),
+        ]
+    )
+    first = fix_main(
+        ["unanswered-calls", "--session", session_id, "--apply", "--claude-home", str(home)]
+    )
+    assert first == 0
+    after_first = path.read_bytes()
+    second = fix_main(
+        ["unanswered-calls", "--session", session_id, "--apply", "--claude-home", str(home)]
+    )
+    assert second == 0
+    assert path.read_bytes() == after_first
+    assert "no unanswered client tool calls" in capsys.readouterr().out

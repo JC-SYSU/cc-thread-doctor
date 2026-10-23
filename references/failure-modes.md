@@ -74,21 +74,28 @@ dropping them would lose records that still parse.
 
 ## 4. Tool call with no result, mid-transcript
 
-**Status: Detected.**
+**Status: Supported (2026-10-23).**
 
 Symptom: the next request can be rejected for an invalid message sequence.
 
 Evidence: a `tool_use` block with no matching `tool_result` and at least one
 user record later in the file.
 
-Treatment planned: either insert a synthetic `tool_result` with `is_error:
-true`, or remove the call. Inserting keeps the model's reasoning attached to an
-answer; removing is cleaner but changes the conversation. This needs its own
-fixture and an `--expect-count` guard before it ships.
+Treatment:
+
+```bash
+python3 scripts/doctor_fix.py unanswered-calls --session <id> --apply
+```
+
+The command inserts a `tool_result` with `is_error: true` at the front of the
+next user message. Inserts keep the model's reasoning attached to an answer;
+removing the call would change the conversation more. `--expect-count` guards
+the number of calls treated, and `--result-text` overrides the synthetic
+message.
 
 ## 5. Unanswered call in the final turn
 
-**Status: Detected, reported as a warning.**
+**Status: Detected as a warning; Supported treatment.**
 
 Evidence: a `tool_use` after the last user record with no result.
 
@@ -97,6 +104,11 @@ the result arrives. It becomes a defect when the session was interrupted. The
 audit cannot tell those apart without a reliable liveness signal (Claude Code
 does not keep the file open between writes, so `lsof` does not help), so it
 reports a warning and says why.
+
+`unanswered-calls` treats it by appending a user record that carries the
+synthetic `tool_result`, chained to the assistant record's `uuid`. Verified on
+a copy of an August 2026 session truncated after a `tool_use`: the repair
+appended the result and a shadow resume returned `ok` with 26,218 input tokens.
 
 ## 6. Server-hosted tool with no recorded result
 

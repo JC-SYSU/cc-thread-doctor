@@ -6,7 +6,7 @@
 
 所有修复都先备份、原子写入、再从磁盘读回验证；需要时可以把会话复制成新 id，用真实的 `claude` CLI 做一次影子 resume 来证明修好了。
 
-状态：v0.1.0，早期版本。audit 和当前两个可用治疗都有测试覆盖；其余失败模式记录了证据和计划中的命令，并明确标注了状态。
+状态：v0.2.0，早期版本。audit 和当前三个可用治疗都有测试覆盖；其余失败模式记录了证据和计划中的命令，并明确标注了状态。
 
 ## 起因
 
@@ -41,12 +41,12 @@ audit（只读） ──► 备份 + SHA-256 ──► fix（原子、未动行�
 | 快照里记录了不该再发送的工具（如关闭 Artifact 后仍带 Artifact） | `doctor_fix.py tools --drop Artifact --apply` |
 | 任意工具 schema 的 `pattern` 含 RE2 不支持的结构 | `doctor_fix.py tools --drop <tool> --apply` |
 | 崩溃导致的尾部截断行（末尾不是合法 JSON） | `doctor_fix.py repair-tail --apply` |
+| `tool_use` 没有配对的 `tool_result`（回合被中断） | `doctor_fix.py unanswered-calls --apply` |
 
-v0.1 只检测、尚未自动治疗：
+只检测、尚未自动治疗：
 
 | 故障 | 状态 |
 | --- | --- |
-| `tool_use` 没有配对的 `tool_result`（回合被中断） | audit 报 `dangling-tool-use` / `unanswered-final-turn` |
 | 会话过大（内联图片、巨型 tool result、请求 blob） | audit 报 `oversized-session` 并给出体积归因 |
 | 孤儿 `tool_result`、未知记录类型 | audit 报出 |
 
@@ -62,6 +62,9 @@ python3 scripts/doctor_audit.py --session abc12345 --json
 # 治疗：先 dry run，再 --apply
 python3 scripts/doctor_fix.py tools --session abc12345 --drop Artifact
 python3 scripts/doctor_fix.py tools --session abc12345 --drop Artifact --apply
+
+# 给被中断的工具调用补一条 is_error 的合成结果
+python3 scripts/doctor_fix.py unanswered-calls --session abc12345 --apply
 
 # 验证：静态，或花 token 做影子 resume
 python3 scripts/doctor_verify.py --session abc12345
@@ -80,7 +83,7 @@ python3 scripts/doctor_verify.py --session abc12345 --shadow-resume --allow-cost
 ## 限制
 
 - 影子 resume 只能证明本机当前供应商接受这个会话，不能保证远端永远接受。
-- JSONL 是内部格式，版本之间会变。v0.1 基于 Claude Code 2.1.304 开发；未知记录类型会原样保留并报告，但将来格式变化可能需要更新读取器。
+- JSONL 是内部格式，版本之间会变。v0.2 基于 Claude Code 2.1.304 开发；未知记录类型会原样保留并报告，但将来格式变化可能需要更新读取器。
 - 最后一条 assistant 消息里未配对的工具调用按 warning 报：回合运行中属于正常现象，只有会话被中断时才会破坏请求。
 - 不修改 Claude Code 本体、hooks 或认证。
 

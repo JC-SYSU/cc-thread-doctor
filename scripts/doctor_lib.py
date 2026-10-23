@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 DEFAULT_BACKUP_SUBDIR = ".cc-thread-doctor-backups"
 
@@ -279,6 +279,27 @@ def tool_call_report(lines: list[Line]):
         and block["tool_use_id"] not in known
     ]
     return dangling, orphans
+
+
+def split_unanswered_calls(lines: list[Line]):
+    """Split unanswered calls into (lost, tail).
+
+    ``lost`` entries sit before the last user record, so their result can never
+    arrive. ``tail`` entries sit in the final assistant message and may simply
+    still be running.
+    """
+    dangling, _ = tool_call_report(lines)
+    last_user_index = max(
+        (
+            line.index
+            for line in lines
+            if line.obj and line.obj.get("type") == "user"
+        ),
+        default=-1,
+    )
+    lost = [item for item in dangling if item[0] < last_user_index]
+    tail = [item for item in dangling if item[0] > last_user_index]
+    return lost, tail
 
 
 def content_stats(lines: list[Line]) -> dict:
@@ -626,21 +647,12 @@ def audit_session(home: Path, session: SessionRef) -> AuditReport:
                     )
                 )
 
-    dangling, orphans = tool_call_report(session_file.lines)
+    _, orphans = tool_call_report(session_file.lines)
     # A tool_use that appears before the last user record has definitely lost
     # its result. One in the final assistant message may simply still be
     # running, so it is reported as a warning with that caveat instead of an
     # error.
-    last_user_index = max(
-        (
-            line.index
-            for line in session_file.lines
-            if line.obj and line.obj.get("type") == "user"
-        ),
-        default=-1,
-    )
-    lost = [item for item in dangling if item[0] < last_user_index]
-    tail = [item for item in dangling if item[0] > last_user_index]
+    lost, tail = split_unanswered_calls(session_file.lines)
     lost_client = [item for item in lost if not item[3]]
     lost_server = [item for item in lost if item[3]]
     if lost_client:
