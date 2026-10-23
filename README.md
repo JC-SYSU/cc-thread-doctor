@@ -10,8 +10,8 @@ Every repair is explicit, backed up, written atomically, and re-read from disk
 to prove the promised invariant still holds. A repair can then be proven
 end-to-end by resuming a shadow copy with the real `claude` CLI.
 
-Status: v0.2.0, early. The audit and the three included treatments are covered
-by tests. The remaining failure modes are documented with their evidence and
+Status: v0.3.0, early. The audit, the four included treatments, and the
+snapshot utility are covered by tests. The remaining failure modes are documented with their evidence and
 planned commands, and are marked as such.
 
 ## The failure this started with
@@ -61,13 +61,17 @@ Verified by tests and by the case above:
 | RE2-incompatible `pattern` in any recorded tool schema | `doctor_fix.py tools --drop <tool> --apply` |
 | Trailing lines cut off by a crash (invalid JSON at the end) | `doctor_fix.py repair-tail --apply` |
 | `tool_use` without a matching `tool_result` (interrupted turn) | `doctor_fix.py unanswered-calls --apply` |
+| Oversized sessions (inline images, giant tool results) | `doctor_fix.py slim --images --tool-outputs 4000 --apply` |
 
 Detected and reported; treatments planned:
 
 | Failure | Status |
 | --- | --- |
-| Oversized sessions (inline images, giant tool results, request blobs) | audit reports `oversized-session` with byte attribution |
 | Orphan `tool_result`, unknown record types | audit reports them |
+
+Session files are also protected by `doctor_backup.py snapshot`, a
+hardlink-based mirror of `~/.claude/projects` with retention and a verified
+single-file restore.
 
 ## Quick start
 
@@ -85,9 +89,18 @@ python3 scripts/doctor_fix.py tools --session abc12345 --drop Artifact --apply
 # Give an interrupted tool call a synthetic error result
 python3 scripts/doctor_fix.py unanswered-calls --session abc12345 --apply
 
+# Replace inline images and truncate oversized tool results
+python3 scripts/doctor_fix.py slim --session abc12345 --images
+python3 scripts/doctor_fix.py slim --session abc12345 --tool-outputs 4000 --apply
+
 # Verify statically, or with a real shadow resume (spends tokens)
 python3 scripts/doctor_verify.py --session abc12345
 python3 scripts/doctor_verify.py --session abc12345 --shadow-resume --allow-cost
+
+# Snapshot the whole corpus and restore one session later
+python3 scripts/doctor_backup.py snapshot --dry-run
+python3 scripts/doctor_backup.py snapshot --keep 7
+python3 scripts/doctor_backup.py restore --session abc12345
 ```
 
 Exit codes: `0` clean or dry run, `1` findings that need attention, `2` the
@@ -95,8 +108,12 @@ tool itself failed. `doctor_audit.py --strict` also fails on warnings.
 
 ## Safety and data
 
-- Backups live in `~/.claude/.cc-thread-doctor-backups/<session>-<timestamp>/`
+- Fix backups live in `~/.claude/.cc-thread-doctor-backups/<session>-<timestamp>/`
   with a SHA-256 manifest. `doctor_fix.py restore` puts one back.
+- `doctor_backup.py snapshot` mirrors `~/.claude/projects` into
+  `~/.claude/.cc-thread-doctor-backups/projects-<timestamp>/`. Files unchanged
+  since the previous snapshot are hardlinked; the first snapshot copies the
+  whole corpus.
 - Every write is a same-directory temp file plus `os.replace`; a failed
   assertion restores the backup and exits 2.
 - The tool writes nothing until `--apply`, and refuses to touch a session whose
@@ -109,7 +126,7 @@ tool itself failed. `doctor_audit.py --strict` also fails on warnings.
 
 - Shadow resume proves the file is resumable on this machine with the current
   provider. It cannot promise a remote service accepts the transcript forever.
-- The JSONL format is internal and changes between releases. v0.2 was developed
+- The JSONL format is internal and changes between releases. v0.3 was developed
   against Claude Code 2.1.304; unknown record types are preserved and reported,
   but a future format change may need a new reader.
 - `dangling-tool-use` in the final assistant message is reported as a warning:
@@ -133,6 +150,7 @@ scripts/doctor_lib.py       session reader, checks, backup and atomic write
 scripts/doctor_audit.py     read-only scan
 scripts/doctor_fix.py       treatments and restore
 scripts/doctor_verify.py    static and shadow verification
+scripts/doctor_backup.py    hardlink snapshots and single-file restore
 references/session-jsonl.md what the file contains and what resume replays
 references/failure-modes.md symptom, evidence, treatment, status
 ```

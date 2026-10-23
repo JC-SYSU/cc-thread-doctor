@@ -10,11 +10,15 @@ Commands:
   repair-tail --session ID                drop trailing lines that are not JSON
   unanswered-calls --session ID           give interrupted tool calls a
                                           synthetic error result
+  slim --session ID [--images] [--tool-outputs N]
+                                          replace inline images and truncate
+                                          oversized tool results
   restore --backup DIR                    put a backup back in place
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -32,6 +36,7 @@ from doctor_lib import (
     backup_session,
     claude_home,
     find_session,
+    human_bytes,
     iter_tool_lists,
     read_session,
     session_is_live,
@@ -412,6 +417,183 @@ def cmd_unanswered_calls(args, home: Path) -> int:
     return 0
 
 
+def _image_placeholder(source: dict) -> dict:
+    media = source.get("media_type") or "image"
+    data = source.get("data")
+    size = len(data) if isinstance(data, str) else 0
+    return {
+        "type": "text",
+        "text": f"[cc-thread-doctor: removed {media} ({size:,} base64 chars)]",
+    }
+
+
+def _truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
+    if len(text) <= max_chars:
+        return text, False
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    marker = f"\n\n[cc-thread-doctor: truncated {len(text):,} chars; sha256={digest}]"
+    keep = max(0, max_chars - len(marker))
+    return text[:keep] + marker, True
+
+
+def _slim_images(blocks: list, stats: dict) -> None:
+    for index, block in enumerate(blocks):
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "image":
+            source = block.get("source")
+            if isinstance(source, dict) and source.get("type") == "base64":
+                blocks[index] = _image_placeholder(source)
+                stats["images"] += 1
+        elif block.get("type") == "tool_result":
+            content = block.get("content")
+            if isinstance(content, list):
+                _slim_images(content, stats)
+
+
+def _slim_tool_outputs(blocks: list, max_chars: int, stats: dict) -> None:
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "tool_result":
+            continue
+        content = block.get("content")
+        if isinstance(content, str):
+            block["content"], changed = _truncate_text(content, max_chars)
+            stats["texts"] += int(changed)
+        elif isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict) or item.get("type") != "text":
+                    continue
+                text = item.get("text")
+                if isinstance(text, str):
+                    item["text"], changed = _truncate_text(text, max_chars)
+                    stats["texts"] += int(changed)
+
+
+def _slim_strings(node, max_chars: int, stats: dict):
+    if isinstance(node, str):
+        new_text, changed = _truncate_text(node, max_chars)
+        if changed:
+            stats["texts"] += 1
+        return new_text
+    if isinstance(node, list):
+        return [_slim_strings(item, max_chars, stats) for item in node]
+    if isinstance(node, dict):
+        return {
+            key: _slim_strings(value, max_chars, stats) for key, value in node.items()
+        }
+    return node
+
+
+def _apply_slim(
+    session_file, do_images: bool, max_chars: int | None
+) -> tuple[dict, set[int]]:
+    stats = {"images": 0, "texts": 0}
+    touched: set[int] = set()
+    for line in session_file.lines:
+        if not line.obj:
+            continue
+        before = dict(stats)
+        message = line.obj.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, list):
+                if do_images:
+                    _slim_images(content, stats)
+                if max_chars:
+                    _slim_tool_outputs(content, max_chars, stats)
+        if max_chars and "toolUseResult" in line.obj:
+            line.obj["toolUseResult"] = _slim_strings(
+                line.obj["toolUseResult"], max_chars, stats
+            )
+        if stats != before:
+            line.raw = _dump_line(line.obj)
+            touched.add(line.index)
+    return stats, touched
+
+
+def cmd_slim(args, home: Path) -> int:
+    if not args.images and not args.tool_outputs:
+        print("error: pass --images, --tool-outputs N, or both", file=sys.stderr)
+        return 1
+    if args.tool_outputs is not None and args.tool_outputs < 200:
+        print("error: --tool-outputs must be at least 200 characters", file=sys.stderr)
+        return 1
+
+    session = find_session(home, args.session)
+    if _refuse_live(session, args.force):
+        return 1
+
+    before = read_session(session.path)
+    analysis = read_session(session.path)
+    stats, touched = _apply_slim(analysis, args.images, args.tool_outputs)
+    total = stats["images"] + stats["texts"]
+    if total == 0:
+        print("nothing to slim; no oversized images or tool results")
+        return 0
+
+    savings = sum(
+        len(before.lines[index].raw) - len(analysis.lines[index].raw)
+        for index in touched
+    )
+    print(f"images: {stats['images']} block(s) replaced")
+    print(
+        f"tool outputs: {stats['texts']} string(s) truncated"
+        + (f" to {args.tool_outputs:,} chars" if args.tool_outputs else "")
+    )
+    print(f"lines rewritten: {len(touched)}")
+    print(f"estimated reduction: {human_bytes(max(savings, 0))}")
+
+    if args.expect_count is not None and total != args.expect_count:
+        print(
+            f"error: expected {args.expect_count} change(s), found {total}; "
+            "nothing written",
+            file=sys.stderr,
+        )
+        return 1
+
+    if not args.apply:
+        print(f"\ndry run: {total} change(s). Re-run with --apply to write.")
+        return 0
+
+    working = read_session(session.path)
+    if len(before.lines) != len(working.lines) or any(
+        old.raw != new.raw for old, new in zip(before.lines, working.lines)
+    ):
+        print(
+            "error: the session changed while the plan was being prepared; nothing written",
+            file=sys.stderr,
+        )
+        return 1
+
+    backup = backup_session(home, session, "slim images and tool outputs")
+    before_hash = sha256_file(session.path)
+
+    try:
+        applied, touched = _apply_slim(working, args.images, args.tool_outputs)
+        atomic_write_session(working, working.lines)
+        after = read_session(session.path)
+        assert_untouched(before, after, touched)
+        check, _ = _apply_slim(read_session(session.path), args.images, args.tool_outputs)
+        if check["images"] or check["texts"]:
+            raise RuntimeError(
+                f"the treatment is not idempotent: {check['images']} image(s), "
+                f"{check['texts']} string(s) still over the limit"
+            )
+    except Exception as exc:  # noqa: BLE001 - any failure must roll back
+        _atomic_restore(backup / "session.jsonl", session.path)
+        print(f"error: {exc}; original restored from {backup}", file=sys.stderr)
+        return 2
+
+    after_hash = sha256_file(session.path)
+    print(f"backup: {backup}")
+    print(f"sha256: {before_hash[:16]}… -> {after_hash[:16]}…")
+    print(
+        f"verified: {applied['images']} image(s), {applied['texts']} string(s), "
+        f"{len(touched)} line(s) rewritten"
+    )
+    return 0
+
+
 def cmd_restore(args) -> int:
     backup_dir = Path(args.backup).expanduser()
     manifest_path = backup_dir / "manifest.json"
@@ -465,6 +647,22 @@ def main(argv: list[str] | None = None) -> int:
     calls.add_argument("--apply", action="store_true")
     _common(calls)
     calls.set_defaults(func=cmd_unanswered_calls)
+
+    slim = subparsers.add_parser(
+        "slim", help="replace inline images and truncate oversized tool results"
+    )
+    slim.add_argument("--session", required=True)
+    slim.add_argument("--images", action="store_true", help="replace base64 images")
+    slim.add_argument(
+        "--tool-outputs",
+        type=int,
+        metavar="CHARS",
+        help="truncate tool output strings longer than this many characters",
+    )
+    slim.add_argument("--expect-count", type=int)
+    slim.add_argument("--apply", action="store_true")
+    _common(slim)
+    slim.set_defaults(func=cmd_slim)
 
     restore = subparsers.add_parser("restore", help="restore a backup")
     restore.add_argument("--backup", required=True)

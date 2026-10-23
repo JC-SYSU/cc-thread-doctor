@@ -322,3 +322,212 @@ def test_unanswered_calls_is_idempotent(make_session, capsys):
     assert second == 0
     assert path.read_bytes() == after_first
     assert "no unanswered client tool calls" in capsys.readouterr().out
+
+
+def _image_block(size: int = 5000) -> dict:
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": "A" * size,
+        },
+    }
+
+
+def test_slim_replaces_images(make_session):
+    home, session_id, path = make_session(
+        [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "timestamp": "2026-10-23T00:00:00.000Z",
+                "sessionId": "sid",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "look"},
+                        _image_block(),
+                    ],
+                },
+            },
+            user_line("after", "sid", uuid="u2"),
+        ]
+    )
+    before = path.read_bytes().split(b"\n")
+    code = fix_main(
+        ["slim", "--session", session_id, "--images", "--apply", "--claude-home", str(home)]
+    )
+    assert code == 0
+
+    after = read_session(path)
+    assert len(after.lines) == 2
+    content = after.lines[0].obj["message"]["content"]
+    assert content[1]["type"] == "text"
+    assert "removed image/png" in content[1]["text"]
+    assert after.lines[1].raw == before[1]
+    assert len(_backup_dirs(home)) == 1
+
+
+def test_slim_truncates_tool_outputs(make_session):
+    long_text = "x" * 5000
+    home, session_id, path = make_session(
+        [
+            user_line("go", "sid", uuid="u1"),
+            {
+                "type": "user",
+                "uuid": "u2",
+                "timestamp": "2026-10-23T00:00:00.000Z",
+                "sessionId": "sid",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": long_text,
+                        }
+                    ],
+                },
+            },
+        ]
+    )
+    code = fix_main(
+        [
+            "slim",
+            "--session",
+            session_id,
+            "--tool-outputs",
+            "1000",
+            "--apply",
+            "--claude-home",
+            str(home),
+        ]
+    )
+    assert code == 0
+
+    after = read_session(path)
+    result = after.lines[1].obj["message"]["content"][0]["content"]
+    assert len(result) <= 1000
+    assert result.startswith("x" * 800)
+    assert "truncated 5,000 chars" in result
+
+
+def test_slim_reaches_nested_blocks_and_tool_use_result(make_session):
+    home, session_id, path = make_session(
+        [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "timestamp": "2026-10-23T00:00:00.000Z",
+                "sessionId": "sid",
+                "toolUseResult": {"stdout": "y" * 3000, "ok": True},
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": [
+                                {"type": "text", "text": "z" * 3000},
+                                _image_block(3000),
+                            ],
+                        }
+                    ],
+                },
+            }
+        ]
+    )
+    code = fix_main(
+        [
+            "slim",
+            "--session",
+            session_id,
+            "--images",
+            "--tool-outputs",
+            "800",
+            "--apply",
+            "--claude-home",
+            str(home),
+        ]
+    )
+    assert code == 0
+
+    after = read_session(path)
+    obj = after.lines[0].obj
+    content = obj["message"]["content"][0]["content"]
+    assert len(content[0]["text"]) <= 800
+    assert content[0]["text"].startswith("z" * 600)
+    assert "truncated 3,000 chars" in content[0]["text"]
+    assert content[1]["type"] == "text"
+    assert "removed image/png" in content[1]["text"]
+    assert len(obj["toolUseResult"]["stdout"]) <= 800
+    assert obj["toolUseResult"]["stdout"].startswith("y" * 600)
+    assert obj["toolUseResult"]["ok"] is True
+
+
+def test_slim_expect_count_guard(make_session):
+    home, session_id, path = make_session(
+        [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "timestamp": "2026-10-23T00:00:00.000Z",
+                "sessionId": "sid",
+                "message": {
+                    "role": "user",
+                    "content": [_image_block()],
+                },
+            }
+        ]
+    )
+    before = path.read_bytes()
+    code = fix_main(
+        [
+            "slim",
+            "--session",
+            session_id,
+            "--images",
+            "--expect-count",
+            "9",
+            "--apply",
+            "--claude-home",
+            str(home),
+        ]
+    )
+    assert code == 1
+    assert path.read_bytes() == before
+    assert _backup_dirs(home) == []
+
+
+def test_slim_is_idempotent(make_session, capsys):
+    home, session_id, path = make_session(
+        [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "timestamp": "2026-10-23T00:00:00.000Z",
+                "sessionId": "sid",
+                "message": {"role": "user", "content": [_image_block()]},
+            }
+        ]
+    )
+    first = fix_main(
+        ["slim", "--session", session_id, "--images", "--apply", "--claude-home", str(home)]
+    )
+    assert first == 0
+    after_first = path.read_bytes()
+    second = fix_main(
+        ["slim", "--session", session_id, "--images", "--apply", "--claude-home", str(home)]
+    )
+    assert second == 0
+    assert path.read_bytes() == after_first
+    assert "nothing to slim" in capsys.readouterr().out
+
+
+def test_slim_requires_a_mode(make_session):
+    home, session_id, path = make_session([user_line("hi", "sid")])
+    before = path.read_bytes()
+    code = fix_main(["slim", "--session", session_id, "--claude-home", str(home)])
+    assert code == 1
+    assert path.read_bytes() == before

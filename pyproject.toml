@@ -1,6 +1,6 @@
 [project]
 name = "cc-thread-doctor"
-version = "0.2.0"
+version = "0.3.0"
 description = "Diagnose and repair Claude Code session files that can no longer resume or pass provider schema validation"
 readme = "README.md"
 requires-python = ">=3.11"

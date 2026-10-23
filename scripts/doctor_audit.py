@@ -14,10 +14,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 
 from doctor_lib import (
     audit_session,
     claude_home,
+    cleanup_period_days,
     find_session,
     human_bytes,
     list_sessions,
@@ -29,12 +31,12 @@ FIX_HINTS = {
     "artifact-in-snapshot": "doctor_fix.py tools --session {id} --drop Artifact --apply",
     "re2-incompatible-schema": "doctor_fix.py tools --session {id} --drop <tool-name> --apply  (or use a provider that accepts the pattern)",
     "truncated-tail": "doctor_fix.py repair-tail --session {id} --apply",
-    "dangling-tool-use": "not automated in v0.1; see references/failure-modes.md",
+    "dangling-tool-use": "doctor_fix.py unanswered-calls --session {id} --apply",
     "unanswered-final-turn": "expected while a turn runs; if the session was interrupted, see references/failure-modes.md",
-    "unanswered-server-tool": "not automated in v0.1; see references/failure-modes.md",
-    "corrupt-lines": "not automated in v0.1; restore an earlier backup or trim manually",
-    "orphan-tool-result": "not automated in v0.1",
-    "oversized-session": "planned: doctor_fix.py slim (v0.2)",
+    "unanswered-server-tool": "not automated yet; see references/failure-modes.md",
+    "corrupt-lines": "not automated yet; restore an earlier backup or trim manually",
+    "orphan-tool-result": "not automated yet",
+    "oversized-session": "doctor_fix.py slim --session {id} --images --tool-outputs 4000 --apply  (pick the flags you need)",
 }
 
 
@@ -136,10 +138,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.json:
         print(json.dumps([_report_dict(report) for report in reports], indent=2, ensure_ascii=False))
-    elif len(reports) == 1:
-        _print_detail(reports[0])
     else:
-        _print_table(reports)
+        if len(reports) == 1:
+            _print_detail(reports[0])
+        else:
+            _print_table(reports)
+        period = cleanup_period_days(home)
+        oldest_days = max(
+            (time.time() - session.mtime) for session in sessions
+        ) / 86400
+        if oldest_days > period:
+            print(
+                f"\nnote: cleanupPeriodDays={period}; the oldest session is "
+                f"{oldest_days:.0f} days old. Claude Code deletes sessions past "
+                "that age on its next cleanup; raise the setting or run "
+                "doctor_backup.py snapshot."
+            )
 
     has_error = any(report.worst_severity() == "error" for report in reports)
     has_warning = any(report.worst_severity() == "warning" for report in reports)

@@ -15,6 +15,7 @@ from conftest import (
 from doctor_lib import (
     artifact_disabled,
     audit_session,
+    cleanup_period_days,
     find_session,
     is_claude_process_line,
     iter_tool_lists,
@@ -128,3 +129,14 @@ def test_audit_does_not_flag_artifact_when_enabled(make_session):
     report = audit_session(home, find_session(home, session_id))
     assert "artifact-in-snapshot" not in {finding.code for finding in report.findings}
     json.dumps(report.stats)  # stats stay serializable
+
+
+def test_cleanup_period_days_applies_the_default(make_session):
+    home, _, _ = make_session([], settings={"cleanupPeriodDays": 3650})
+    assert cleanup_period_days(home) == 3650
+
+    home, _, _ = make_session([], settings={})
+    assert cleanup_period_days(home) == 30
+
+    home, _, _ = make_session([], settings={"cleanupPeriodDays": 0})
+    assert cleanup_period_days(home) == 30

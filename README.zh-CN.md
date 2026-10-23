@@ -6,7 +6,7 @@
 
 所有修复都先备份、原子写入、再从磁盘读回验证；需要时可以把会话复制成新 id，用真实的 `claude` CLI 做一次影子 resume 来证明修好了。
 
-状态：v0.2.0，早期版本。audit 和当前三个可用治疗都有测试覆盖；其余失败模式记录了证据和计划中的命令，并明确标注了状态。
+状态：v0.3.0，早期版本。audit、四个可用治疗和快照工具都有测试覆盖；其余失败模式记录了证据和计划中的命令，并明确标注了状态。
 
 ## 起因
 
@@ -42,13 +42,15 @@ audit（只读） ──► 备份 + SHA-256 ──► fix（原子、未动行�
 | 任意工具 schema 的 `pattern` 含 RE2 不支持的结构 | `doctor_fix.py tools --drop <tool> --apply` |
 | 崩溃导致的尾部截断行（末尾不是合法 JSON） | `doctor_fix.py repair-tail --apply` |
 | `tool_use` 没有配对的 `tool_result`（回合被中断） | `doctor_fix.py unanswered-calls --apply` |
+| 会话过大（内联图片、巨型 tool result） | `doctor_fix.py slim --images --tool-outputs 4000 --apply` |
 
 只检测、尚未自动治疗：
 
 | 故障 | 状态 |
 | --- | --- |
-| 会话过大（内联图片、巨型 tool result、请求 blob） | audit 报 `oversized-session` 并给出体积归因 |
 | 孤儿 `tool_result`、未知记录类型 | audit 报出 |
+
+`doctor_backup.py snapshot` 另外提供 `~/.claude/projects` 的硬链接镜像、保留份数和单文件还原。
 
 ## 快速开始
 
@@ -66,16 +68,26 @@ python3 scripts/doctor_fix.py tools --session abc12345 --drop Artifact --apply
 # 给被中断的工具调用补一条 is_error 的合成结果
 python3 scripts/doctor_fix.py unanswered-calls --session abc12345 --apply
 
+# 替换内联图片、截断超长工具输出
+python3 scripts/doctor_fix.py slim --session abc12345 --images
+python3 scripts/doctor_fix.py slim --session abc12345 --tool-outputs 4000 --apply
+
 # 验证：静态，或花 token 做影子 resume
 python3 scripts/doctor_verify.py --session abc12345
 python3 scripts/doctor_verify.py --session abc12345 --shadow-resume --allow-cost
+
+# 全库快照与单会话还原
+python3 scripts/doctor_backup.py snapshot --dry-run
+python3 scripts/doctor_backup.py snapshot --keep 7
+python3 scripts/doctor_backup.py restore --session abc12345
 ```
 
 退出码：`0` 干净或 dry run，`1` 有问题需要处理，`2` 工具自身失败。`doctor_audit.py --strict` 会把 warning 也算失败。
 
 ## 数据与安全
 
-- 备份在 `~/.claude/.cc-thread-doctor-backups/<session>-<时间戳>/`，带 SHA-256 manifest；`doctor_fix.py restore` 可以放回去。
+- 单次修复的备份在 `~/.claude/.cc-thread-doctor-backups/<session>-<时间戳>/`，带 SHA-256 manifest；`doctor_fix.py restore` 可以放回去。
+- `doctor_backup.py snapshot` 把 `~/.claude/projects` 镜像到 `~/.claude/.cc-thread-doctor-backups/projects-<时间戳>/`；与上一份相同的文件用硬链接，第一份会复制整个目录。
 - 每次写入都是同目录临时文件加 `os.replace`；断言失败会自动还原备份并以 2 退出。
 - 不加 `--apply` 不写任何东西；会话 id 出现在运行中的 `claude --resume` 进程里时，除非 `--force`，否则拒绝写入。
 - 报告只留在本机，不联网。影子 resume 是唯一会联系供应商的操作，走你现有的 CLI 配置。
@@ -83,7 +95,7 @@ python3 scripts/doctor_verify.py --session abc12345 --shadow-resume --allow-cost
 ## 限制
 
 - 影子 resume 只能证明本机当前供应商接受这个会话，不能保证远端永远接受。
-- JSONL 是内部格式，版本之间会变。v0.2 基于 Claude Code 2.1.304 开发；未知记录类型会原样保留并报告，但将来格式变化可能需要更新读取器。
+- JSONL 是内部格式，版本之间会变。v0.3 基于 Claude Code 2.1.304 开发；未知记录类型会原样保留并报告，但将来格式变化可能需要更新读取器。
 - 最后一条 assistant 消息里未配对的工具调用按 warning 报：回合运行中属于正常现象，只有会话被中断时才会破坏请求。
 - 不修改 Claude Code 本体、hooks 或认证。
 
@@ -102,6 +114,7 @@ scripts/doctor_lib.py       会话读取、检查、备份与原子写入
 scripts/doctor_audit.py     只读扫描
 scripts/doctor_fix.py       治疗与还原
 scripts/doctor_verify.py    静态与影子验证
+scripts/doctor_backup.py    硬链接快照与单文件还原
 references/session-jsonl.md 文件里有什么、resume 会重放什么
 references/failure-modes.md 症状、证据、治疗、状态
 ```

@@ -14,9 +14,10 @@ There is nothing to install: the scripts use only the standard library.
 git clone https://github.com/JC-SYSU/cc-thread-doctor.git ~/cc-thread-doctor
 cd ~/cc-thread-doctor
 
-# Smoke test: help text and an empty scan
+# Smoke test: help text, a scan, and a backup dry run
 python3 scripts/doctor_audit.py --help
 python3 scripts/doctor_audit.py --all
+python3 scripts/doctor_backup.py snapshot --dry-run
 
 # Optional: run the tests
 python3 -m pytest -q
@@ -34,7 +35,9 @@ when testing against a copy.
    (`shasum` before and after).
 5. `doctor_fix.py tools --session <one-real-id> --drop Artifact` prints a plan
    or "nothing to do" and does not write.
-6. `python3 -m pytest -q` passes.
+6. `doctor_backup.py snapshot --dry-run` reports the file count and size and
+   creates no directory.
+7. `python3 -m pytest -q` passes.
 
 Do not run `--apply` or `--shadow-resume` during installation.
 

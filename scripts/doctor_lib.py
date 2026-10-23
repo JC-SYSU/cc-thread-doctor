@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 DEFAULT_BACKUP_SUBDIR = ".cc-thread-doctor-backups"
 
@@ -419,6 +419,16 @@ def artifact_disabled(home: Path) -> bool:
         if data.get("disableArtifact") is True:
             return True
     return False
+
+
+def cleanup_period_days(home: Path) -> int:
+    """The effective cleanupPeriodDays, with the 30-day default applied."""
+    value = load_settings(home).get("cleanupPeriodDays", 30)
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        return 30
+    return days if days > 0 else 30
 
 
 def anthropic_base_url(home: Path) -> str:

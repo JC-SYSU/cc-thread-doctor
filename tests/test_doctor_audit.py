@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 
 from conftest import (
     ARTIFACT_TOOL,
@@ -73,3 +75,15 @@ def test_cli_title_is_reported(make_session, capsys):
     )
     audit_main(["--session", session_id, "--claude-home", str(home)])
     assert "macOS 27兼容性调研" in capsys.readouterr().out
+
+
+def test_fleet_audit_notes_the_cleanup_period(make_session, capsys):
+    home, _session_id, path = make_session(
+        [user_line("hi", "sid")], settings={"cleanupPeriodDays": 30}
+    )
+    old = time.time() - 90 * 86400
+    os.utime(path, (old, old))
+    code = audit_main(["--all", "--claude-home", str(home)])
+    output = capsys.readouterr().out
+    assert code == 0
+    assert "cleanupPeriodDays=30" in output

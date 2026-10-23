@@ -35,7 +35,7 @@ Repairs files, not Claude Code itself. A session is a plaintext JSONL file under
    python3 scripts/doctor_verify.py --session <id> --shadow-resume --allow-cost
    ```
 
-## Treatments in v0.2
+## Treatments in v0.3
 
 ```bash
 # Remove a tool definition recorded in prompt snapshots
@@ -47,9 +47,25 @@ python3 scripts/doctor_fix.py repair-tail --session <id> --apply
 # Fill an interrupted tool call with a synthetic error result
 python3 scripts/doctor_fix.py unanswered-calls --session <id> --apply
 
+# Replace inline images and truncate oversized tool results
+python3 scripts/doctor_fix.py slim --session <id> --images --tool-outputs 4000 --apply
+
 # Restore a backup
 python3 scripts/doctor_fix.py restore --backup <dir>
 ```
+
+## Snapshots
+
+```bash
+python3 scripts/doctor_backup.py snapshot --dry-run   # show size and file count
+python3 scripts/doctor_backup.py snapshot --keep 7
+python3 scripts/doctor_backup.py list
+python3 scripts/doctor_backup.py restore --snapshot latest --session <id>
+```
+
+The first snapshot copies the whole corpus; later ones hardlink unchanged
+files. Restore verifies the file's SHA-256 and refuses a live session unless
+`--force` is passed. Suggest a snapshot before any batch of fixes.
 
 ## Rules
 
@@ -74,4 +90,6 @@ python3 scripts/doctor_fix.py restore --backup <dir>
   `unanswered-calls`.
 - `unanswered-final-turn`: normal while a turn runs; a defect if interrupted.
   The same treatment appends a user record carrying the synthetic result.
-- `oversized-session`: check the byte attribution before proposing a slim.
+- `oversized-session`: check the byte attribution, then use `slim`. Images are
+  replaced with a short text block; tool output strings are truncated with a
+  SHA-256 marker so the original can be identified.

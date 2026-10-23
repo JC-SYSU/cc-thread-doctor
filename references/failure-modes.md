@@ -131,7 +131,7 @@ resume failure.
 
 ## 8. Oversized session
 
-**Status: Detected.**
+**Status: Supported (2026-10-23).**
 
 Evidence: file size, inline base64 images, giant `tool_result` text, and
 `api-request-blob` records are summed and attributed.
@@ -140,9 +140,23 @@ Observed: sessions from 10 MB to 51 MB in a 229-session corpus. A 3.6 MB
 session resumed with roughly 407k input tokens, which is roughly US$2 on a
 low-cost provider and far more on a premium one.
 
-Treatment planned (`slim`): replace inline images with a text placeholder,
-truncate oversized tool results with a hash, optionally drop request blobs. Each
-transform needs its own opt-in flag because it changes conversation content.
+Treatment:
+
+```bash
+python3 scripts/doctor_fix.py slim --session <id> --images
+python3 scripts/doctor_fix.py slim --session <id> --tool-outputs 4000 --apply
+```
+
+`--images` replaces each base64 image with a short text block naming the media
+type and payload size. `--tool-outputs N` truncates tool result strings and
+long strings inside `toolUseResult` to N characters, appending a SHA-256 marker
+so the original content can be identified. Both flags can be combined.
+
+Measured on copies of real August sessions: one 4.99 MB session fell to 64 KB
+after ten images were replaced; a 34.5 MB session fell to 30.5 MB after 439
+strings were truncated to 4,000 characters. The second session is still
+oversized because attachments and remaining message text dominate it; `slim`
+reports the reduction, not a target size.
 
 ## 9. Thinking blocks signed by another provider
 
@@ -181,13 +195,18 @@ only preserves such records.
 
 ## 13. Transcript loss from the cleanup period
 
-**Status: Observed (2026-10-22). Prevention planned.**
+**Status: Observed (2026-10-22), Supported prevention (2026-10-23).**
 
 Claude Code deletes session files older than `cleanupPeriodDays` (default 30)
 on a rolling cleanup. A machine that had never raised the value lost 97
 sessions; recovery required APFS and Time Machine snapshots.
 
-Planned: `doctor_backup.py` (periodic snapshot of `projects/` with retention)
-and an audit check that warns when `cleanupPeriodDays` is low relative to the
-oldest session the user still references. This is data protection rather than
-repair, but it addresses the most expensive failure observed so far.
+`doctor_backup.py snapshot` mirrors `projects/` into timestamped directories,
+hardlinking files unchanged since the previous snapshot, and keeps the newest
+`--keep` snapshots (default 7). `restore` copies one session back and verifies
+its SHA-256.
+
+The fleet audit also prints a note when the oldest session is older than the
+effective `cleanupPeriodDays`, so a default 30-day configuration is visible
+before the cleanup runs. This is data protection rather than repair, but it
+addresses the most expensive failure observed so far.
